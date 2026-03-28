@@ -13,14 +13,35 @@ const (
 	defaultBranch         = "main"
 )
 
-// GitHubResources holds the created GitHub resources, making them accessible for testing and exporting.
+// Config layer
+
+type GitLabConfig struct {
+	Repository string
+	Owner      string
+	Token      pulumi.StringOutput
+}
+
+func LoadGitLabConfig(ctx *pulumi.Context) GitLabConfig {
+	cfg := config.New(ctx, "gitlab")
+
+	return GitLabConfig{
+		Repository: cfg.Require("repository"),
+		Owner:      cfg.Require("owner"),
+		Token:      cfg.RequireSecret("token"),
+	}
+}
+
+// Resources
+
 type GitHubResource struct {
 	Repository *github.Repository
 }
 
-// defineInfrastructure defines the GitHub resources for the project.
-// It is separated from main() to be independently testable.
 func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
+	// Load config
+	gitlab := LoadGitLabConfig(ctx)
+
+	// Repository
 	repository, err := github.NewRepository(ctx, "nixConfigRepository", &github.RepositoryArgs{
 		DeleteBranchOnMerge: pulumi.Bool(true),
 		Description:         pulumi.String(repositoryDescription),
@@ -46,6 +67,7 @@ func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
 		return nil, err
 	}
 
+	// Branch protection
 	_, err = github.NewBranchProtection(ctx, "nixConfigMainBranchProtection", &github.BranchProtectionArgs{
 		RepositoryId:          repository.NodeId,
 		Pattern:               pulumi.String(defaultBranch),
@@ -55,6 +77,7 @@ func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
 		return nil, err
 	}
 
+	// Labels
 	_, err = github.NewIssueLabel(ctx, "nixConfigLabelGithubActions", &github.IssueLabelArgs{
 		Color:       pulumi.String("E66E01"),
 		Description: pulumi.String("This issue is related to github-actions dependencies"),
@@ -75,14 +98,11 @@ func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
 		return nil, err
 	}
 
-	gitlabRepo := config.Require(ctx, "gitlabRepository")
-	gitlabToken := config.RequireSecret(ctx, "gitlabToken")
-	gitlabOwner := config.Require(ctx, "gitlabOwner")
-
+	// GitHub Actions secrets
 	_, err = github.NewActionsSecret(ctx, "nixConfigGitlabRepositorySecret", &github.ActionsSecretArgs{
 		Repository:     repository.Name,
 		SecretName:     pulumi.String("GITLAB_REPOSITORY"),
-		PlaintextValue: pulumi.String(gitlabRepo),
+		PlaintextValue: pulumi.String(gitlab.Repository),
 	}, pulumi.Parent(repository), pulumi.Protect(false))
 	if err != nil {
 		return nil, err
@@ -91,7 +111,7 @@ func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
 	_, err = github.NewActionsSecret(ctx, "nixConfigGitlabTokenSecret", &github.ActionsSecretArgs{
 		Repository:     repository.Name,
 		SecretName:     pulumi.String("GITLAB_TOKEN"),
-		PlaintextValue: gitlabToken,
+		PlaintextValue: gitlab.Token,
 	}, pulumi.Parent(repository), pulumi.Protect(false))
 	if err != nil {
 		return nil, err
@@ -100,7 +120,7 @@ func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
 	_, err = github.NewActionsSecret(ctx, "nixConfigGitlabOwnerSecret", &github.ActionsSecretArgs{
 		Repository:     repository.Name,
 		SecretName:     pulumi.String("GITLAB_OWNER"),
-		PlaintextValue: pulumi.String(gitlabOwner),
+		PlaintextValue: pulumi.String(gitlab.Owner),
 	}, pulumi.Parent(repository), pulumi.Protect(false))
 	if err != nil {
 		return nil, err
@@ -111,6 +131,8 @@ func defineInfrastructure(ctx *pulumi.Context) (*GitHubResource, error) {
 	}, nil
 }
 
+// Entry point
+
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		resources, err := defineInfrastructure(ctx)
@@ -118,8 +140,7 @@ func main() {
 			return err
 		}
 
-		// Export outputs from the returned resources
-		ctx.Export("repository", resources.Repository.Name)
+		ctx.Export("repositoryName", resources.Repository.Name)
 		ctx.Export("repositoryUrl", resources.Repository.HtmlUrl)
 		return nil
 	})
